@@ -11,7 +11,6 @@ from typing import List, Optional
 from hdf5libs import HDF5RawDataFile
 import tempfile
 
-import uproot # import daqdataformats
 from daqdataformats import FragmentType
 #from rawdatautils.unpack.daphne import *
 from rawdatautils.unpack.utils  import *
@@ -27,6 +26,8 @@ import struct
 import uproot
 import awkward as ak
 
+from func_gdml import *
+
 def save_triggers_with_uproot(triggers, filename):
     # Construir listas para cada campo
     modules = []
@@ -36,26 +37,49 @@ def save_triggers_with_uproot(triggers, filename):
     nhits_list = []
     channels_list = []
     adcs_list = []
+    x=[]
+    y=[]
+    z=[]
+    position_flag=[]
+    x2=[]
+    y2=[]
+    z2=[]
 
     for trig in triggers:
         modules.append(trig['module'])
         time50MHz_list.append(trig['time50MHz'])
         raw_backend_time_list.append(trig['raw_backend_time'])
         timestamp_list.append(trig['timestamp'])
-
+        x.append(trig['x'])
+        y.append(trig['y'])
+        z.append(trig['z'])
+        position_flag.append(trig['position_flag'])
         nhits_list.append(len(trig['hits']))
+
         channels_list.append([h['offline_channel'] for h in trig['hits']])
         adcs_list.append([h['adc'] for h in trig['hits']])
+        x2.append([h['x2'] for h in trig['hits']])
+        y2.append([h['y2'] for h in trig['hits']])
+        z2.append([h['z2'] for h in trig['hits']])
 
-    # Criar uma árvore (TTree) com arrays (Awkward Array para listas variáveis)
+
+    position_flag = [str(pf) for pf in position_flag]
+
     array_data = {
         "module": np.array(modules, dtype=np.int32),
         "time50MHz": np.array(time50MHz_list, dtype=np.uint64),
         "raw_backend_time": np.array(raw_backend_time_list, dtype=np.uint64),
         "timestamp": np.array(timestamp_list, dtype=np.uint64),
+        "x": np.array(x, dtype=np.float32),
+        "y": np.array(y, dtype=np.float32),
+        "z": np.array(z, dtype=np.float32),
+        "position_flag": np.array(position_flag,  dtype=object),
         "nhits": np.array(nhits_list, dtype=np.int32),
         "channels": ak.Array(channels_list),
         "adcs": ak.Array(adcs_list),
+        "x2": ak.Array(x2),
+        "y2": ak.Array(y2),
+        "z2": ak.Array(z2),
     }
 
     with uproot.recreate(filename) as f:
@@ -182,11 +206,6 @@ def main():
                 subdet = detdataformats.DetID.Subdetector(det_id)
                 det_name = detdataformats.DetID.subdetector_to_string(subdet)
 
-                #print(f"link: { det_link}")
-                #print(f"slot: { det_slot}")
-                #print(f"crate: { det_crate}")
-                #print(f"id: { det_id}")
-
                 fragment_bytes = frag.get_data_bytes()
 
                 start_index = fragment_bytes.find(b'M')  # busca o byte 0x4D
@@ -220,6 +239,13 @@ def main():
                     print(f"Magic header bytenot found: expecting: 'M', found: {magic}")
                     continue
 
+                try:
+                    offline_module_num = fChannelMap[module_num]
+                except IndexError:
+                    print(f"Module {module_num} outside channel map.")
+                    continue
+
+
                 hits = []
                 offset_hits = start_index + header_size
                 for i_hit in range(nhit):
@@ -239,31 +265,36 @@ def main():
                         continue
 
                     offline_channel = map_offline_channel(module_num, channel)
-                    hits.append({'offline_channel': offline_channel, 'adc': adc})
 
-                try:
-                    offline_module_num = fChannelMap[module_num]
-                except IndexError:
-                    print(f"Module {module_num} outside channel map.")
-                    continue
+                    [x_rel,y_rel,z_rel] = return_position2(offline_module_num,offline_channel)
+                    x_rel, y_rel, z_rel = map(float, (x_rel, y_rel, z_rel))
+                    hits.append({'offline_channel': offline_channel, 'adc': adc, 'x2': x_rel, 'y2': y_rel, 'z2': z_rel})
 
-                # Agora montamos o CRT::Trigger no estilo do C++
+               
+                
+                [x,y,z,this_char] = return_position(offline_module_num)
+                x, y, z = map(float, (x, y, z))
+
+                this_char = np.array(this_char, dtype='S1')
+        
                 trigger = {
                     'module': offline_module_num,
                     'time50MHz': fifty_mhz_time,
                     'raw_backend_time': raw_back_time,
                     'timestamp': timestamp,
-                    'hits': hits
+                    'hits': hits,
+                    'x': x,
+                    'y': y,
+                    'z': z,
+                    'position_flag': this_char
                 }
 
                 triggers.append(trigger)
+
                 
         save_triggers_with_uproot(triggers, file_output)
-        print(f"Arquivo ROOT salvo com uproot: {file_output}")
-        # Exemplo: imprimir todos os triggers deste evento
-        #for trig in triggers:
-            #print("Trigger montado:", trig)
-
+        print(f"ROOT File saved: {file_output}")
+       
             
 if __name__ == "__main__":
     main()
